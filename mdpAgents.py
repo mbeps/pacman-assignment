@@ -1,7 +1,7 @@
 # mdpAgents.py
 # parsons/20-nov-2017
 #
-# Version 2.0
+# Version 3.0
 #
 # An MDP-based agent that handles ghosts using value iteration.
 
@@ -15,8 +15,8 @@ from copy import deepcopy
 
 class MDPAgent(Agent):
     """
-    An agent that uses value iteration to compute optimal actions,
-    now with ghost avoidance/chasing capabilities
+    An agent that uses value iteration to compute optimal actions.
+    All decision making is done through the MDP framework with enhanced ghost handling.
     """
     def __init__(self):
         # Grid representation
@@ -29,60 +29,150 @@ class MDPAgent(Agent):
         # MDP parameters
         self.discount = 0.9
         self.living_reward = -0.04
-        self.food_reward = 100
+        self.food_reward = 10
+        self.ghost_penalty = -50  # Base penalty for ghost square
+        self.scared_ghost_reward = 20  # Reward for eating scared ghost
         self.iterations = 100
         self.convergence_threshold = 0.01
         
-        # Ghost-related parameters
-        self.ghost_reward = -500      
-        self.ghost_near_reward = -100 
-        self.ghost_scared_reward = 200 
-        self.capsule_reward = 100
-        
-        # State tracking
-        self.last_score = None
-        self.last_food_count = None
-        self.last_ghost_states = None
+        # Ghost parameters
+        self.ghost_radius = 2  # How far ghost danger spreads
+        self.ghost_discount = 0.7  # How quickly ghost danger decreases with distance
 
     def registerInitialState(self, state):
         """Initialize the agent with the game state"""
-        # Get grid dimensions from corners
         corners = api.corners(state)
         self.width = max(x for x, y in corners) + 1
         self.height = max(y for x, y in corners) + 1
         
-        # Initialize grids for utilities and rewards
         self.utilities = self.create_grid(0.0)
         self.rewards = self.create_grid(self.living_reward)
         
-        # Mark walls
         walls = api.walls(state)
         for x, y in walls:
             self.rewards[x][y] = None
             self.utilities[x][y] = None
             
-        # Set food rewards
-        food = api.food(state)
-        for x, y in food:
-            self.rewards[x][y] = self.food_reward
-            
-        # Set capsule rewards
-        capsules = api.capsules(state)
-        for x, y in capsules:
-            self.rewards[x][y] = self.capsule_reward
-            
-        # Initialize ghost states
-        self.last_ghost_states = api.ghostStates(state)
-        self.last_food_count = len(food)
-        self.last_score = state.getScore()
-            
-        # Run initial value iteration
-        self.value_iteration()
+        self.update_state(state)
 
     def create_grid(self, initial_value):
         """Create a width x height grid with initial_value"""
         return [[initial_value for y in range(self.height)] 
                 for x in range(self.width)]
+
+    def manhattan_distance(self, pos1, pos2):
+        """Calculate Manhattan distance between two positions"""
+        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+
+    def update_state(self, state):
+        """Update the MDP state and rewards based on current game state"""
+        # Reset non-wall states to living reward
+        for x in range(self.width):
+            for y in range(self.height):
+                if self.rewards[x][y] is not None:
+                    self.rewards[x][y] = self.living_reward
+        
+        self.update_rewards(state)
+        self.value_iteration()
+
+    def update_rewards(self, state):
+        """Update rewards based on current state with enhanced ghost handling"""
+        # Food rewards
+        for x, y in api.food(state):
+            self.rewards[x][y] += self.food_reward
+            
+        # Ghost rewards with danger zone
+        ghost_states = api.ghostStates(state)
+        pacman_pos = api.whereAmI(state)
+        
+        for (ghost_x, ghost_y), scared in ghost_states:
+            ghost_x = int(ghost_x)
+            ghost_y = int(ghost_y)
+            
+            # Handle each position within ghost radius
+            for x in range(max(0, ghost_x - self.ghost_radius), 
+                         min(self.width, ghost_x + self.ghost_radius + 1)):
+                for y in range(max(0, ghost_y - self.ghost_radius),
+                             min(self.height, ghost_y + self.ghost_radius + 1)):
+                    
+                    if self.rewards[x][y] is not None:  # If not a wall
+                        distance = self.manhattan_distance((ghost_x, ghost_y), (x, y))
+                        
+                        if distance <= self.ghost_radius:
+                            if scared:
+                                # Scared ghosts are attractive, but reward decreases with distance
+                                reward = self.scared_ghost_reward * (self.ghost_discount ** distance)
+                                self.rewards[x][y] += reward
+                            else:
+                                # Normal ghosts create danger zones that increase with proximity
+                                penalty = self.ghost_penalty * (self.ghost_discount ** distance)
+                                # Direct ghost square is extremely dangerous
+                                if distance == 0:
+                                    penalty *= 2
+                                self.rewards[x][y] += penalty
+
+    def get_transition_prob(self, curr_pos, next_pos, action):
+        """
+        Get transition probability for moving from curr_pos to next_pos with given action
+        Accounts for walls by returning 0 probability for wall transitions
+        """
+        x, y = curr_pos
+        next_x, next_y = next_pos
+        
+        # Check if next position is a wall or out of bounds
+        if (next_x < 0 or next_x >= self.width or 
+            next_y < 0 or next_y >= self.height or 
+            self.rewards[next_x][next_y] is None):
+            return 0.0
+            
+        # Determine intended and perpendicular directions
+        if action == Directions.NORTH:
+            if next_y == y + 1 and next_x == x:
+                return 0.8  # Intended direction
+            if (next_y == y and (next_x == x + 1 or next_x == x - 1)):
+                return 0.1  # Perpendicular directions
+        elif action == Directions.SOUTH:
+            if next_y == y - 1 and next_x == x:
+                return 0.8
+            if (next_y == y and (next_x == x + 1 or next_x == x - 1)):
+                return 0.1
+        elif action == Directions.EAST:
+            if next_x == x + 1 and next_y == y:
+                return 0.8
+            if (next_x == x and (next_y == y + 1 or next_y == y - 1)):
+                return 0.1
+        elif action == Directions.WEST:
+            if next_x == x - 1 and next_y == y:
+                return 0.8
+            if (next_x == x and (next_y == y + 1 or next_y == y - 1)):
+                return 0.1
+                
+        return 0.0
+
+    def get_expected_utility(self, x, y, action):
+        """
+        Compute expected utility of taking an action in state (x,y)
+        using the non-deterministic Bellman equation
+        """
+        if self.rewards[x][y] is None:  # Wall
+            return float('-inf')
+            
+        exp_utility = 0.0
+        
+        # Consider all possible next states
+        for next_x in range(max(0, x-1), min(self.width, x+2)):
+            for next_y in range(max(0, y-1), min(self.height, y+2)):
+                # Get transition probability
+                prob = self.get_transition_prob((x, y), (next_x, next_y), action)
+                
+                if prob > 0:
+                    # If transition leads to wall, stay in current state
+                    if (self.rewards[next_x][next_y] is None):
+                        exp_utility += prob * self.utilities[x][y]
+                    else:
+                        exp_utility += prob * self.utilities[next_x][next_y]
+        
+        return exp_utility
 
     def value_iteration(self):
         """Perform value iteration to compute utilities for all states"""
@@ -93,152 +183,33 @@ class MDPAgent(Agent):
             for x in range(self.width):
                 for y in range(self.height):
                     if self.rewards[x][y] is not None:
-                        utility = self.compute_state_utility(x, y)
-                        new_utilities[x][y] = utility
-                        change = abs(utility - self.utilities[x][y])
+                        max_utility = float('-inf')
+                        
+                        # Calculate maximum expected utility over all actions
+                        for action in [Directions.NORTH, Directions.SOUTH, 
+                                     Directions.EAST, Directions.WEST]:
+                            exp_utility = self.get_expected_utility(x, y, action)
+                            max_utility = max(max_utility, exp_utility)
+                        
+                        # Bellman update
+                        new_utilities[x][y] = self.rewards[x][y] + self.discount * max_utility
+                        
+                        # Track maximum change
+                        change = abs(new_utilities[x][y] - self.utilities[x][y])
                         max_change = max(max_change, change)
+                    else:
+                        new_utilities[x][y] = None
             
             self.utilities = new_utilities
             
+            # Check for convergence
             if max_change < self.convergence_threshold:
                 break
 
-    def compute_state_utility(self, x, y):
-        """Compute utility for a state using the Bellman equation"""
-        if self.rewards[x][y] is None:  # Wall
-            return None
-            
-        R = self.rewards[x][y]
-        
-        # Get maximum expected utility over all actions
-        max_utility = float("-inf")
-        for action in [Directions.NORTH, Directions.SOUTH, 
-                      Directions.EAST, Directions.WEST]:
-            exp_utility = self.get_expected_utility(x, y, action)
-            max_utility = max(max_utility, exp_utility)
-            
-        return R + self.discount * max_utility
-
-    def get_expected_utility(self, x, y, action):
-        """Compute expected utility of taking an action in state (x,y)"""
-        successors = self.get_successor_states(x, y, action)
-        
-        exp_utility = 0.0
-        for (next_x, next_y), prob in successors.items():
-            # Check if successor is valid
-            if (0 <= next_x < self.width and
-                0 <= next_y < self.height and
-                self.utilities[next_x][next_y] is not None):
-                exp_utility += prob * self.utilities[next_x][next_y]
-            else:
-                # If would hit wall or go out of bounds, stay in same place
-                exp_utility += prob * self.utilities[x][y]
-            
-        return exp_utility
-
-    def get_successor_states(self, x, y, action):
-        """Return dictionary of successor states and their probabilities"""
-        successors = {}
-        
-        # Get direction vectors
-        if action == Directions.NORTH:
-            intended = (0, 1)
-            perpendicular = [(1, 0), (-1, 0)]
-        elif action == Directions.SOUTH:
-            intended = (0, -1)
-            perpendicular = [(1, 0), (-1, 0)]
-        elif action == Directions.EAST:
-            intended = (1, 0)
-            perpendicular = [(0, 1), (0, -1)]
-        elif action == Directions.WEST:
-            intended = (-1, 0)
-            perpendicular = [(0, 1), (0, -1)]
-            
-        # Add intended direction (0.8 probability)
-        next_x = x + intended[0]
-        next_y = y + intended[1]
-        successors[(next_x, next_y)] = 0.8
-        
-        # Add perpendicular directions (0.1 probability each)
-        for dx, dy in perpendicular:
-            next_x = x + dx
-            next_y = y + dy
-            successors[(next_x, next_y)] = 0.1
-            
-        return successors
-
-    def add_adjacent_rewards(self, x, y, reward):
-        """Add rewards to squares adjacent to (x,y)"""
-        adjacents = [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]
-        for adj_x, adj_y in adjacents:
-            if (0 <= adj_x < self.width and 
-                0 <= adj_y < self.height and 
-                self.rewards[adj_x][adj_y] is not None):
-                # Only update if it would make the reward more extreme
-                if reward < 0:
-                    self.rewards[adj_x][adj_y] = min(
-                        self.rewards[adj_x][adj_y], 
-                        reward
-                    )
-                else:
-                    self.rewards[adj_x][adj_y] = max(
-                        self.rewards[adj_x][adj_y], 
-                        reward
-                    )
-
     def getAction(self, state):
         """Get the optimal action using maximum expected utility"""
-        # Get current state information
-        ghost_states = api.ghostStates(state)
-        food = api.food(state)
-        capsules = api.capsules(state)
-        current_score = state.getScore()
+        self.update_state(state)
         
-        # Check if state has changed
-        state_changed = (len(food) != self.last_food_count or 
-                        current_score != self.last_score or
-                        ghost_states != self.last_ghost_states)
-                        
-        if state_changed:
-            # Reset non-wall states to living reward
-            for x in range(self.width):
-                for y in range(self.height):
-                    if self.rewards[x][y] is not None:
-                        self.rewards[x][y] = self.living_reward
-            
-            # Update food rewards
-            for x, y in food:
-                self.rewards[x][y] = self.food_reward
-                
-            # Update capsule rewards
-            for x, y in capsules:
-                self.rewards[x][y] = self.capsule_reward
-                
-            # Update ghost rewards based on state
-            for (ghost_x, ghost_y), scared in ghost_states:
-                ghost_x = int(ghost_x)
-                ghost_y = int(ghost_y)
-                
-                if scared:
-                    # If ghost is scared, it's a positive reward
-                    self.rewards[ghost_x][ghost_y] = self.ghost_scared_reward
-                    # Make adjacent squares slightly positive
-                    self.add_adjacent_rewards(ghost_x, ghost_y, self.ghost_scared_reward * 0.5)
-                else:
-                    # If ghost is dangerous, it's a negative reward
-                    self.rewards[ghost_x][ghost_y] = self.ghost_reward
-                    # Make adjacent squares negative but less so
-                    self.add_adjacent_rewards(ghost_x, ghost_y, self.ghost_near_reward)
-            
-            # Rerun value iteration
-            self.value_iteration()
-            
-            # Update tracking variables
-            self.last_food_count = len(food)
-            self.last_score = current_score
-            self.last_ghost_states = ghost_states
-        
-        # Get current position and legal actions
         x, y = api.whereAmI(state)
         legal = api.legalActions(state)
         if Directions.STOP in legal:
@@ -254,15 +225,13 @@ class MDPAgent(Agent):
                 max_utility = exp_utility
                 best_action = action
                 
-        # If no legal actions or all have same utility, choose random
-        if best_action is None:
+        if best_action is None and legal:
             best_action = random.choice(legal)
             
         return api.makeMove(best_action, legal)
 
     def final(self, state):
         """Called at the end of each game"""
-        # Reset any necessary state variables here
-        self.last_score = None
-        self.last_food_count = None
-        self.last_ghost_states = None
+        # Reset state variables
+        self.utilities = None
+        self.rewards = None
