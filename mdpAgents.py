@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 from pacman import Directions
 from game import Agent
 import api
@@ -6,30 +8,68 @@ import game
 import util
 
 class MDPAgent(Agent):
+    """A Pacman agent that uses Modified Policy Iteration (MPI) to make decisions.
+    
+    This agent implements a Markov Decision Process (MDP) solution where:
+    - States track Pacman position, ghost positions, and wall locations
+    - Actions are the legal moves (North, South, East, West)
+    - Rewards include penalties for ghosts and wall collisions
+    - Transitions have uncertainty (0.8 intended, 0.1 perpendicular directions)
+    
+    The agent uses Modified Policy Iteration to find an optimal policy by alternating between:
+    1. Limited policy evaluation: V(s) = R(s) + gamma * Σ P(s'|s,pi(s)) * V(s')
+    2. Policy improvement: pi(s) = argmax_a Σ P(s'|s,a)[R(s,a,s') + gamma*V(s')]
+    """
+
     def __init__(self):
-        # MDP Parameters
-        self.discount = 0.9  # Discount factor gamma
-        self.k = 3  # Number of value iterations per policy iteration
-        self.theta = 0.01  # Convergence threshold
+        # MDP PARAMETERS
+        # Discount factor gamma: Determines how much future rewards are valued compared to immediate ones
+        self.discount = 0.9 
+        # Controls number of value function updates before policy improvement
+        self.k = 3  
+        # Convergence threshold: Defines when value iteration should stop based on value changes
+        self.theta = 0.01  
         
-        # Reward Parameters
-        self.ghost_penalty = -100  # Penalty for being near a ghost
-        self.ghost_distance_threshold = 3  # Distance to consider ghost threat
+        # MOVEMENT PARAMETERS
+        # Probability that Pacman moves in the direction it intends to
+        self.prob_intended = 0.8  
+        # Probability of deviating 90 degrees from intended direction
+        self.prob_perpendicular = 0.1  
         
-        # Movement probability parameters (from api.py)
-        self.prob_intended = 0.8  # Probability of moving in intended direction
-        self.prob_perpendicular = 0.1  # Probability of moving perpendicular
+        # GHOST PARAMETERS
+        # Base value for how much Pacman is penalized for being near ghosts
+        self.ghost_penalty = -100  
+        # Maximum distance at which ghosts are considered threatening
+        self.ghost_distance_threshold = 4  
+        # Factor that controls how ghost penalty scales with distance
+        self.ghost_penalty_divisor = 1  
         
-        # State tracking
-        self.V = util.Counter()  # Value function
-        self.pi = util.Counter()  # Policy
+        # COLLISION PARAMETERS
+        # Penalty applied when Pacman attempts to move into a wall
+        self.wall_collision_penalty = -10  
+        
+        # STATE TRACKING
+        # Stores the value function mapping states to their estimated values
+        self.V = util.Counter()  
+        # Stores the policy mapping states to optimal actions
+        self.pi = util.Counter()  
 
     def registerInitialState(self, state):
+        """Reset the agent's value function and policy for a new game.
+        
+        Initializes empty Counters for both V (state values) and π (policy) at game start.
+        """
         # Reset values for new game
         self.V = util.Counter()
         self.pi = util.Counter()
         
     def getAction(self, state):
+        """Determine the next action for Pacman using the MDP policy.
+        
+        Runs modified policy iteration to update values and policy, then returns either:
+        - The best action according to current policy if legal
+        - A random legal action if best action is not legal
+        """
         # Get legal actions
         legal = api.legalActions(state)
         if Directions.STOP in legal:
@@ -50,14 +90,24 @@ class MDPAgent(Agent):
             return api.makeMove(random.choice(legal), legal)
             
     def getStateKey(self, state):
-        """Convert state to hashable key - only tracking Pacman and ghost positions"""
+        """Create a hashable representation of the game state.
+        
+        Converts the state into a tuple containing:
+        - Pacman's position (x,y)
+        - Ghost positions as sorted tuple
+        - Wall positions as sorted tuple
+        """
         pacman_pos = api.whereAmI(state)
         ghost_positions = tuple(sorted(api.ghosts(state)))
         walls = tuple(sorted(api.walls(state)))
         return (pacman_pos, ghost_positions, walls)
 
     def getNextState(self, state_key, action):
-        """Predict next state given current state and action"""
+        """Predict the next state given current state and action.
+        
+        Computes next position based on action direction and checks for wall collisions.
+        Returns new state key with updated Pacman position.
+        """
         pacman_pos, ghost_positions, walls = state_key
         x, y = pacman_pos
         
@@ -78,26 +128,38 @@ class MDPAgent(Agent):
         return (next_pos, ghost_positions, walls)
             
     def getReward(self, state_key, action, next_state_key):
-        """Calculate reward for state-action-nextstate transition"""
+        """Calculate the immediate reward for a state transition.
+        
+        Rewards are determined by:
+        - Wall collision penalty (-10)
+        - Ghost proximity penalty: ghost_penalty / (distance + 1)
+        where penalties increase as distance to ghost decreases
+        """
         current_pos = state_key[0]
         ghost_positions = state_key[1]
         next_pos = next_state_key[0]
         
         # If position didn't change (hit wall), penalize
         if current_pos == next_pos:
-            return -10
+            return self.wall_collision_penalty
         
         reward = 0
         # Check ghost distances from next position
         for ghost_pos in ghost_positions:
             dist = util.manhattanDistance(next_pos, ghost_pos)
             if dist < self.ghost_distance_threshold:
-                reward += self.ghost_penalty / (dist + 1)
+                reward += self.ghost_penalty / (dist + self.ghost_penalty_divisor)
                     
         return reward
         
     def getTransitionProb(self, action):
-        """Get transition probabilities for action"""
+        """Get probability distribution over actual movements for intended action.
+        
+        Movement uncertainty model:
+        - P(intended direction) = 0.8
+        - P(perpendicular directions) = 0.1 each
+        Returns Counter mapping directions to probabilities.
+        """
         probs = util.Counter()
         
         if action == Directions.NORTH:
@@ -120,7 +182,16 @@ class MDPAgent(Agent):
         return probs
         
     def modifiedPolicyIteration(self, state, legal_actions):
-        """Modified Policy Iteration implementation"""
+        """Update value function and policy using Modified Policy Iteration (MPI).
+        
+        Performs k steps of policy evaluation using Bellman equation:
+        V(s) = R(s) + γ * Σ P(s'|s,π(s)) * V(s')
+        
+        Followed by policy improvement:
+        π(s) = argmax_a Σ P(s'|s,a)[R(s,a,s') + γV(s')]
+        
+        Stops evaluation early if value change < theta threshold.
+        """
         current_state_key = self.getStateKey(state)
         
         # Policy evaluation for k steps
@@ -178,6 +249,9 @@ class MDPAgent(Agent):
         self.pi[current_state_key] = best_action
         
     def final(self, state):
-        """Reset state for new game"""
+        """Reset agent's value function and policy when game ends.
+        
+        Clears V and π Counters to prepare for next game.
+        """
         self.V = util.Counter()
         self.pi = util.Counter()
