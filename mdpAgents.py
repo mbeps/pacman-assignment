@@ -1,4 +1,9 @@
-# -*- coding: utf-8 -*-
+# mdpAgents.py
+# parsons/20-nov-2017
+#
+# Version 2.0
+#
+# An MDP-based agent that handles ghosts using value iteration.
 
 from pacman import Directions
 from game import Agent
@@ -6,252 +11,258 @@ import api
 import random
 import game
 import util
+from copy import deepcopy
 
 class MDPAgent(Agent):
-    """A Pacman agent that uses Modified Policy Iteration (MPI) to make decisions.
-    
-    This agent implements a Markov Decision Process (MDP) solution where:
-    - States track Pacman position, ghost positions, and wall locations
-    - Actions are the legal moves (North, South, East, West)
-    - Rewards include penalties for ghosts and wall collisions
-    - Transitions have uncertainty (0.8 intended, 0.1 perpendicular directions)
-    
-    The agent uses Modified Policy Iteration to find an optimal policy by alternating between:
-    1. Limited policy evaluation: V(s) = R(s) + gamma * Σ P(s'|s,pi(s)) * V(s')
-    2. Policy improvement: pi(s) = argmax_a Σ P(s'|s,a)[R(s,a,s') + gamma*V(s')]
     """
-
+    An agent that uses value iteration to compute optimal actions,
+    now with ghost avoidance/chasing capabilities
+    """
     def __init__(self):
-        # MDP PARAMETERS
-        # Discount factor gamma: Determines how much future rewards are valued compared to immediate ones
-        self.discount = 0.9 
-        # Controls number of value function updates before policy improvement
-        self.k = 3  
-        # Convergence threshold: Defines when value iteration should stop based on value changes
-        self.theta = 0.01  
+        # Grid representation
+        self.grid = None
+        self.utilities = None
+        self.rewards = None
+        self.width = None 
+        self.height = None
         
-        # MOVEMENT PARAMETERS
-        # Probability that Pacman moves in the direction it intends to
-        self.prob_intended = 0.8  
-        # Probability of deviating 90 degrees from intended direction
-        self.prob_perpendicular = 0.1  
+        # MDP parameters
+        self.discount = 0.9
+        self.living_reward = -0.04
+        self.food_reward = 100
+        self.iterations = 100
+        self.convergence_threshold = 0.01
         
-        # GHOST PARAMETERS
-        # Base value for how much Pacman is penalized for being near ghosts
-        self.ghost_penalty = -100  
-        # Maximum distance at which ghosts are considered threatening
-        self.ghost_distance_threshold = 4  
-        # Factor that controls how ghost penalty scales with distance
-        self.ghost_penalty_divisor = 1  
+        # Ghost-related parameters
+        self.ghost_reward = -500      
+        self.ghost_near_reward = -100 
+        self.ghost_scared_reward = 200 
+        self.capsule_reward = 100
         
-        # COLLISION PARAMETERS
-        # Penalty applied when Pacman attempts to move into a wall
-        self.wall_collision_penalty = -10  
-        
-        # STATE TRACKING
-        # Stores the value function mapping states to their estimated values
-        self.V = util.Counter()  
-        # Stores the policy mapping states to optimal actions
-        self.pi = util.Counter()  
+        # State tracking
+        self.last_score = None
+        self.last_food_count = None
+        self.last_ghost_states = None
 
     def registerInitialState(self, state):
-        """Reset the agent's value function and policy for a new game.
+        """Initialize the agent with the game state"""
+        # Get grid dimensions from corners
+        corners = api.corners(state)
+        self.width = max(x for x, y in corners) + 1
+        self.height = max(y for x, y in corners) + 1
         
-        Initializes empty Counters for both V (state values) and π (policy) at game start.
-        """
-        # Reset values for new game
-        self.V = util.Counter()
-        self.pi = util.Counter()
+        # Initialize grids for utilities and rewards
+        self.utilities = self.create_grid(0.0)
+        self.rewards = self.create_grid(self.living_reward)
         
+        # Mark walls
+        walls = api.walls(state)
+        for x, y in walls:
+            self.rewards[x][y] = None
+            self.utilities[x][y] = None
+            
+        # Set food rewards
+        food = api.food(state)
+        for x, y in food:
+            self.rewards[x][y] = self.food_reward
+            
+        # Set capsule rewards
+        capsules = api.capsules(state)
+        for x, y in capsules:
+            self.rewards[x][y] = self.capsule_reward
+            
+        # Initialize ghost states
+        self.last_ghost_states = api.ghostStates(state)
+        self.last_food_count = len(food)
+        self.last_score = state.getScore()
+            
+        # Run initial value iteration
+        self.value_iteration()
+
+    def create_grid(self, initial_value):
+        """Create a width x height grid with initial_value"""
+        return [[initial_value for y in range(self.height)] 
+                for x in range(self.width)]
+
+    def value_iteration(self):
+        """Perform value iteration to compute utilities for all states"""
+        for _ in range(self.iterations):
+            new_utilities = self.create_grid(0.0)
+            max_change = 0.0
+            
+            for x in range(self.width):
+                for y in range(self.height):
+                    if self.rewards[x][y] is not None:
+                        utility = self.compute_state_utility(x, y)
+                        new_utilities[x][y] = utility
+                        change = abs(utility - self.utilities[x][y])
+                        max_change = max(max_change, change)
+            
+            self.utilities = new_utilities
+            
+            if max_change < self.convergence_threshold:
+                break
+
+    def compute_state_utility(self, x, y):
+        """Compute utility for a state using the Bellman equation"""
+        if self.rewards[x][y] is None:  # Wall
+            return None
+            
+        R = self.rewards[x][y]
+        
+        # Get maximum expected utility over all actions
+        max_utility = float("-inf")
+        for action in [Directions.NORTH, Directions.SOUTH, 
+                      Directions.EAST, Directions.WEST]:
+            exp_utility = self.get_expected_utility(x, y, action)
+            max_utility = max(max_utility, exp_utility)
+            
+        return R + self.discount * max_utility
+
+    def get_expected_utility(self, x, y, action):
+        """Compute expected utility of taking an action in state (x,y)"""
+        successors = self.get_successor_states(x, y, action)
+        
+        exp_utility = 0.0
+        for (next_x, next_y), prob in successors.items():
+            # Check if successor is valid
+            if (0 <= next_x < self.width and
+                0 <= next_y < self.height and
+                self.utilities[next_x][next_y] is not None):
+                exp_utility += prob * self.utilities[next_x][next_y]
+            else:
+                # If would hit wall or go out of bounds, stay in same place
+                exp_utility += prob * self.utilities[x][y]
+            
+        return exp_utility
+
+    def get_successor_states(self, x, y, action):
+        """Return dictionary of successor states and their probabilities"""
+        successors = {}
+        
+        # Get direction vectors
+        if action == Directions.NORTH:
+            intended = (0, 1)
+            perpendicular = [(1, 0), (-1, 0)]
+        elif action == Directions.SOUTH:
+            intended = (0, -1)
+            perpendicular = [(1, 0), (-1, 0)]
+        elif action == Directions.EAST:
+            intended = (1, 0)
+            perpendicular = [(0, 1), (0, -1)]
+        elif action == Directions.WEST:
+            intended = (-1, 0)
+            perpendicular = [(0, 1), (0, -1)]
+            
+        # Add intended direction (0.8 probability)
+        next_x = x + intended[0]
+        next_y = y + intended[1]
+        successors[(next_x, next_y)] = 0.8
+        
+        # Add perpendicular directions (0.1 probability each)
+        for dx, dy in perpendicular:
+            next_x = x + dx
+            next_y = y + dy
+            successors[(next_x, next_y)] = 0.1
+            
+        return successors
+
+    def add_adjacent_rewards(self, x, y, reward):
+        """Add rewards to squares adjacent to (x,y)"""
+        adjacents = [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]
+        for adj_x, adj_y in adjacents:
+            if (0 <= adj_x < self.width and 
+                0 <= adj_y < self.height and 
+                self.rewards[adj_x][adj_y] is not None):
+                # Only update if it would make the reward more extreme
+                if reward < 0:
+                    self.rewards[adj_x][adj_y] = min(
+                        self.rewards[adj_x][adj_y], 
+                        reward
+                    )
+                else:
+                    self.rewards[adj_x][adj_y] = max(
+                        self.rewards[adj_x][adj_y], 
+                        reward
+                    )
+
     def getAction(self, state):
-        """Determine the next action for Pacman using the MDP policy.
+        """Get the optimal action using maximum expected utility"""
+        # Get current state information
+        ghost_states = api.ghostStates(state)
+        food = api.food(state)
+        capsules = api.capsules(state)
+        current_score = state.getScore()
         
-        Runs modified policy iteration to update values and policy, then returns either:
-        - The best action according to current policy if legal
-        - A random legal action if best action is not legal
-        """
-        # Get legal actions
+        # Check if state has changed
+        state_changed = (len(food) != self.last_food_count or 
+                        current_score != self.last_score or
+                        ghost_states != self.last_ghost_states)
+                        
+        if state_changed:
+            # Reset non-wall states to living reward
+            for x in range(self.width):
+                for y in range(self.height):
+                    if self.rewards[x][y] is not None:
+                        self.rewards[x][y] = self.living_reward
+            
+            # Update food rewards
+            for x, y in food:
+                self.rewards[x][y] = self.food_reward
+                
+            # Update capsule rewards
+            for x, y in capsules:
+                self.rewards[x][y] = self.capsule_reward
+                
+            # Update ghost rewards based on state
+            for (ghost_x, ghost_y), scared in ghost_states:
+                ghost_x = int(ghost_x)
+                ghost_y = int(ghost_y)
+                
+                if scared:
+                    # If ghost is scared, it's a positive reward
+                    self.rewards[ghost_x][ghost_y] = self.ghost_scared_reward
+                    # Make adjacent squares slightly positive
+                    self.add_adjacent_rewards(ghost_x, ghost_y, self.ghost_scared_reward * 0.5)
+                else:
+                    # If ghost is dangerous, it's a negative reward
+                    self.rewards[ghost_x][ghost_y] = self.ghost_reward
+                    # Make adjacent squares negative but less so
+                    self.add_adjacent_rewards(ghost_x, ghost_y, self.ghost_near_reward)
+            
+            # Rerun value iteration
+            self.value_iteration()
+            
+            # Update tracking variables
+            self.last_food_count = len(food)
+            self.last_score = current_score
+            self.last_ghost_states = ghost_states
+        
+        # Get current position and legal actions
+        x, y = api.whereAmI(state)
         legal = api.legalActions(state)
         if Directions.STOP in legal:
             legal.remove(Directions.STOP)
             
-        # Get current state key
-        current_state = self.getStateKey(state)
-        
-        # Run modified policy iteration
-        self.modifiedPolicyIteration(state, legal)
-        
-        # Get best action according to policy
-        best_action = self.pi[current_state]
-        
-        if best_action in legal:
-            return api.makeMove(best_action, legal)
-        else:
-            return api.makeMove(random.choice(legal), legal)
-            
-    def getStateKey(self, state):
-        """Create a hashable representation of the game state.
-        
-        Converts the state into a tuple containing:
-        - Pacman's position (x,y)
-        - Ghost positions as sorted tuple
-        - Wall positions as sorted tuple
-        """
-        pacman_pos = api.whereAmI(state)
-        ghost_positions = tuple(sorted(api.ghosts(state)))
-        walls = tuple(sorted(api.walls(state)))
-        return (pacman_pos, ghost_positions, walls)
-
-    def getNextState(self, state_key, action):
-        """Predict the next state given current state and action.
-        
-        Computes next position based on action direction and checks for wall collisions.
-        Returns new state key with updated Pacman position.
-        """
-        pacman_pos, ghost_positions, walls = state_key
-        x, y = pacman_pos
-        
-        # Get next position based on action
-        if action == Directions.NORTH:
-            next_pos = (x, y + 1)
-        elif action == Directions.SOUTH:
-            next_pos = (x, y - 1)
-        elif action == Directions.EAST:
-            next_pos = (x + 1, y)
-        elif action == Directions.WEST:
-            next_pos = (x - 1, y)
-        
-        # Check if next position is a wall
-        if next_pos in walls:
-            next_pos = pacman_pos
-            
-        return (next_pos, ghost_positions, walls)
-            
-    def getReward(self, state_key, action, next_state_key):
-        """Calculate the immediate reward for a state transition.
-        
-        Rewards are determined by:
-        - Wall collision penalty (-10)
-        - Ghost proximity penalty: ghost_penalty / (distance + 1)
-        where penalties increase as distance to ghost decreases
-        """
-        current_pos = state_key[0]
-        ghost_positions = state_key[1]
-        next_pos = next_state_key[0]
-        
-        # If position didn't change (hit wall), penalize
-        if current_pos == next_pos:
-            return self.wall_collision_penalty
-        
-        reward = 0
-        # Check ghost distances from next position
-        for ghost_pos in ghost_positions:
-            dist = util.manhattanDistance(next_pos, ghost_pos)
-            if dist < self.ghost_distance_threshold:
-                reward += self.ghost_penalty / (dist + self.ghost_penalty_divisor)
-                    
-        return reward
-        
-    def getTransitionProb(self, action):
-        """Get probability distribution over actual movements for intended action.
-        
-        Movement uncertainty model:
-        - P(intended direction) = 0.8
-        - P(perpendicular directions) = 0.1 each
-        Returns Counter mapping directions to probabilities.
-        """
-        probs = util.Counter()
-        
-        if action == Directions.NORTH:
-            probs[Directions.NORTH] = self.prob_intended
-            probs[Directions.EAST] = self.prob_perpendicular
-            probs[Directions.WEST] = self.prob_perpendicular
-        elif action == Directions.SOUTH:
-            probs[Directions.SOUTH] = self.prob_intended
-            probs[Directions.EAST] = self.prob_perpendicular
-            probs[Directions.WEST] = self.prob_perpendicular
-        elif action == Directions.EAST:
-            probs[Directions.EAST] = self.prob_intended
-            probs[Directions.NORTH] = self.prob_perpendicular
-            probs[Directions.SOUTH] = self.prob_perpendicular
-        elif action == Directions.WEST:
-            probs[Directions.WEST] = self.prob_intended
-            probs[Directions.NORTH] = self.prob_perpendicular
-            probs[Directions.SOUTH] = self.prob_perpendicular
-            
-        return probs
-        
-    def modifiedPolicyIteration(self, state, legal_actions):
-        """Update value function and policy using Modified Policy Iteration (MPI).
-        
-        Performs k steps of policy evaluation using Bellman equation:
-        V(s) = R(s) + γ * Σ P(s'|s,π(s)) * V(s')
-        
-        Followed by policy improvement:
-        π(s) = argmax_a Σ P(s'|s,a)[R(s,a,s') + γV(s')]
-        
-        Stops evaluation early if value change < theta threshold.
-        """
-        current_state_key = self.getStateKey(state)
-        
-        # Policy evaluation for k steps
-        for _ in range(self.k):
-            delta = 0
-            v = self.V[current_state_key]
-            
-            # If no policy for state yet, initialize randomly
-            if current_state_key not in self.pi:
-                self.pi[current_state_key] = random.choice(legal_actions)
-            
-            action = self.pi[current_state_key]
-            new_v = 0
-            
-            # Get transition probabilities for intended action
-            trans_probs = self.getTransitionProb(action)
-            
-            # Calculate expected value over all possible outcomes
-            for actual_action, prob in trans_probs.items():
-                # Get next state for this actual action
-                next_state_key = self.getNextState(current_state_key, actual_action)
-                # Get reward for this transition
-                reward = self.getReward(current_state_key, actual_action, next_state_key)
-                # Update value using Bellman equation
-                new_v += prob * (reward + self.discount * self.V[next_state_key])
-            
-            self.V[current_state_key] = new_v
-            delta = abs(v - new_v)
-            
-            if delta < self.theta:
-                break
-                
-        # Policy improvement
-        old_action = self.pi[current_state_key]
-        
-        # Find best action
-        max_value = float('-inf')
+        # Find action with maximum expected utility
+        max_utility = float("-inf")
         best_action = None
         
-        # Try all legal actions
-        for action in legal_actions:
-            value = 0
-            trans_probs = self.getTransitionProb(action)
-            
-            # Calculate expected value over all possible outcomes
-            for actual_action, prob in trans_probs.items():
-                next_state_key = self.getNextState(current_state_key, actual_action)
-                reward = self.getReward(current_state_key, actual_action, next_state_key)
-                value += prob * (reward + self.discount * self.V[next_state_key])
-                
-            if value > max_value:
-                max_value = value
+        for action in legal:
+            exp_utility = self.get_expected_utility(x, y, action)
+            if exp_utility > max_utility:
+                max_utility = exp_utility
                 best_action = action
                 
-        self.pi[current_state_key] = best_action
-        
+        # If no legal actions or all have same utility, choose random
+        if best_action is None:
+            best_action = random.choice(legal)
+            
+        return api.makeMove(best_action, legal)
+
     def final(self, state):
-        """Reset agent's value function and policy when game ends.
-        
-        Clears V and π Counters to prepare for next game.
-        """
-        self.V = util.Counter()
-        self.pi = util.Counter()
+        """Called at the end of each game"""
+        # Reset any necessary state variables here
+        self.last_score = None
+        self.last_food_count = None
+        self.last_ghost_states = None
