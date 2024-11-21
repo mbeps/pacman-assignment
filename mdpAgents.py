@@ -15,15 +15,15 @@ class MDPAgent(Agent):
         self.height = None
         
         # MDP parameters
-        self.discount = 0.7
+        self.discount = 0.75
         self.danger_discount = 0.95
         self.living_reward = -0.04
-        self.food_reward = 10
+        self.food_reward = 20
         self.ghost_reward = -1000
         self.danger_radius = 4
         self.food_radius = 3  # Smaller radius for food propagation
-        self.iterations = 100
-        self.convergence_threshold = 0.01
+        self.iterations = 1500
+        self.convergence_threshold = 0.001
 
     def registerInitialState(self, state):
         corners = api.corners(state)
