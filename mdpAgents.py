@@ -15,13 +15,16 @@ class MDPAgent(Agent):
         self.height = None
         
         # MDP parameters
-        self.discount = 0.75
+        self.discount = 0.75  
         self.danger_discount = 0.95
         self.living_reward = -0.04
-        self.food_reward = 20
+        self.food_reward = 20 
         self.ghost_reward = -1000
-        self.danger_radius = 4
-        self.food_radius = 3  # Smaller radius for food propagation
+        
+        # These will be set based on map size
+        self.danger_radius = None
+        self.food_radius = None
+        
         self.iterations = 1500
         self.convergence_threshold = 0.001
 
@@ -29,6 +32,15 @@ class MDPAgent(Agent):
         corners = api.corners(state)
         self.width = max(x for x, y in corners) + 1
         self.height = max(y for x, y in corners) + 1
+        
+        ghost_count = len(api.ghosts(state))
+        
+        if ghost_count == 2:
+            self.danger_radius = 4
+            self.food_radius = 3
+        else:  
+            self.danger_radius = 3
+            self.food_radius = 2
         
         self.utilities = self.create_grid(0.0)
         self.rewards = self.create_grid(self.living_reward)
