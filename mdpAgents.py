@@ -14,20 +14,18 @@ class MDPAgent(Agent):
         self.width = None 
         self.height = None
         
-        # MDP parameters
-        self.discount = 0.75  
-        self.danger_discount = 0.95
-        self.living_reward = -0.04
-        self.food_reward = 20 
-        self.ghost_reward = -1000
-        
-        # These will be set based on map size
+        # Default MDP parameters that will be overridden
+        self.discount = None
+        self.danger_discount = None
+        self.living_reward = None
+        self.food_reward = None
+        self.ghost_reward = None
         self.danger_radius = None
         self.food_radius = None
         
         self.iterations = 1500
         self.convergence_threshold = 0.001
-
+    
     def registerInitialState(self, state):
         """
         Initialises the MDP agent a new game starts.
@@ -51,9 +49,19 @@ class MDPAgent(Agent):
         if ghost_count == 2:
             self.danger_radius = 4
             self.food_radius = 3
+            self.discount = 0.75  
+            self.danger_discount = 0.95
+            self.living_reward = -0.04
+            self.food_reward = 20 
+            self.ghost_reward = -1000
         elif ghost_count == 1:  
-            self.danger_radius = 4
+            self.danger_radius = 5
             self.food_radius = 3
+            self.discount = 0.75  
+            self.danger_discount = 0.95
+            self.living_reward = -0.06
+            self.food_reward = 50 
+            self.ghost_reward = -100
         
         self.utilities = self.create_grid(0.0)
         self.rewards = self.create_grid(self.living_reward)
@@ -80,7 +88,7 @@ class MDPAgent(Agent):
 
     def update_state(self, state):
         """
-        Updates the internal state representation of the agent.
+        Continuously updates the internal state representation of the agent.
         This maintains a fresh state representation ensuring the utility values are up-to-date.
         This is called when the game starts, after each move and state changes. 
 
