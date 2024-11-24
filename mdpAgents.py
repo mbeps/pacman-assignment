@@ -16,12 +16,16 @@ class MDPAgent(Agent):
         
         # Default MDP parameters that will be overridden
         self.discount = None
-        self.danger_discount = None
         self.living_reward = None
-        self.food_reward = None
+        
+        self.danger_discount = None
         self.ghost_reward = None
         self.danger_radius = None
+        self.danger_decay = None
+        
+        self.food_reward = None
         self.food_radius = None
+        self.food_decay = None
         
         self.iterations = 1500
         self.convergence_threshold = 0.001
@@ -47,21 +51,25 @@ class MDPAgent(Agent):
         ghost_count = len(api.ghosts(state))
         
         if ghost_count == 2:
-            self.danger_radius = 4
-            self.food_radius = 3
             self.discount = 0.75  
-            self.danger_discount = 0.95
             self.living_reward = -0.04
-            self.food_reward = 20 
-            self.ghost_reward = -1000
-        elif ghost_count == 1:  
-            self.danger_radius = 5
-            self.food_radius = 3
-            self.discount = 0.75  
             self.danger_discount = 0.95
+            self.ghost_reward = -1000
+            self.danger_radius = 4
+            self.danger_decay = 0.7
+            self.food_reward = 20 
+            self.food_radius = 3
+            self.food_decay = 0.5
+        elif ghost_count == 1:  
+            self.discount = 0.75  
             self.living_reward = -0.06
-            self.food_reward = 50 
+            self.danger_discount = 0.95
             self.ghost_reward = -100
+            self.danger_radius = 5
+            self.danger_decay = 0.7
+            self.food_reward = 75 
+            self.food_radius = 3
+            self.food_decay = 0.6
         
         self.utilities = self.create_grid(0.0)
         self.rewards = self.create_grid(self.living_reward)
@@ -112,15 +120,20 @@ class MDPAgent(Agent):
     def update_rewards(self, state):
         """
         Updates the rewards grid based on the current state.
-        - Resets all non-wall states to the living reward   
-        - Applies penalties for ghost states based on distance
-        - Applies rewards for food states based on distance
-        - Propagates food rewards across the map
-
-        Uses distance as weight to apply penalties and rewards when propagating.
-        This insures that the influence does not decay too quickly and is more localized.
-        However, the decay should not remain large for larger distances to avoid overfitting.
-
+        
+        Ghost Radius Behavior:
+        Inside Radius:
+        - Uses exponential decay with Manhattan distance: ghost_reward * (0.7 ^ manhattan_dist)
+        - Stronger penalties closer to ghost, gradually decreasing until radius edge
+        - Applied directly during reward calculation phase
+        - Uses min() to ensure strongest penalty prevails
+        
+        Outside Radius:  
+        - No direct ghost penalty applied in reward calculation
+        - Only receives living reward (-0.04 or -0.06)
+        - However, penalties still propagate through Bellman equation during value iteration
+        - Uses lower discount factor (0.75) compared to danger zone (0.95)
+        
         Parameters:
         state (GameState): The current game state
         """
@@ -143,8 +156,7 @@ class MDPAgent(Agent):
                         if self.rewards[x][y] is not None:
                             manhattan_dist = abs(x - ghost_x) + abs(y - ghost_y)
                             if manhattan_dist <= self.danger_radius:
-                                # Using 0.7 as base for faster decay
-                                penalty = self.ghost_reward * (0.7 ** manhattan_dist)
+                                penalty = self.ghost_reward * (self.danger_decay ** manhattan_dist)
                                 self.rewards[x][y] = min(self.rewards[x][y], penalty)
 
         # Process food rewards with propagation
@@ -160,7 +172,7 @@ class MDPAgent(Agent):
                         if manhattan_dist <= self.food_radius and manhattan_dist > 0:
                             # Using 0.5 as base for very fast decay
                             # This ensures food influence drops off quickly
-                            reward = self.food_reward * (0.5 ** manhattan_dist)
+                            reward = self.food_reward * (self.food_decay ** manhattan_dist)
                             self.rewards[x][y] += reward
 
     def value_iteration(self):
@@ -260,7 +272,6 @@ class MDPAgent(Agent):
         # for the given action (e.g., moving NORTH might have 0.8 prob forward, 0.1 left, 0.1 right)
         successors = self.get_successor_states(x, y, action)
         
-        # Initialize expected utility to 0
         exp_utility = 0.0
         # Iterate through each possible next state and its probability
         for (next_x, next_y), prob in successors.items():
@@ -338,6 +349,8 @@ class MDPAgent(Agent):
         str: The chosen action (e.g., Directions.NORTH)
         """
         self.update_state(state)
+        #! For debugging 
+        # self.print_grid(self.utilities)
         
         x, y = api.whereAmI(state)
         legal = api.legalActions(state)
@@ -357,6 +370,45 @@ class MDPAgent(Agent):
             best_action = random.choice(legal)
             
         return api.makeMove(best_action, legal)
+
+    def print_grid(self, grid):
+        """Prints a formatted view of the utilities grid with colored values"""
+        # ANSI color codes
+        GREEN = '\033[92m'      # Positive values
+        RED = '\033[91m'        # Negative values
+        BLUE = '\033[94m'       # Zero values
+        RESET = '\033[0m'
+        PACMAN = '\033[43m'     # Yellow background for Pacman
+        GHOST = '\033[101m'     # Bright red background for ghosts
+        BOLD = '\033[1m'        # Bold text
+        
+        # Get positions
+        pacman_pos = api.whereAmI(self.current_state)
+        ghost_positions = api.ghosts(self.current_state)
+        
+        for y in range(self.height-1, -1, -1):
+            row = ""
+            for x in range(self.width):
+                if grid[x][y] is None:  # Wall
+                    row += "          "     # 10 spaces for walls
+                else:
+                    value = grid[x][y]
+                    if value > 0:
+                        color = GREEN
+                    elif value < 0:
+                        color = RED
+                    else:
+                        color = BLUE
+                    
+                    # Add highlights for Pacman and ghosts
+                    if (x, y) == pacman_pos:
+                        row += PACMAN + BOLD + color + "{:8.2f}  ".format(value) + RESET
+                    elif (x, y) in ghost_positions:
+                        row += GHOST + BOLD + color + "{:8.2f}  ".format(value) + RESET
+                    else:
+                        row += color + "{:8.2f}  ".format(value) + RESET
+            print(row)
+        print("-" * (self.width * 10))
 
     def final(self, state):
         """Reset all instance variables between games"""
