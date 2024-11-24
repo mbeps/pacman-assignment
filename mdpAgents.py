@@ -57,7 +57,7 @@ class MDPAgent(Agent):
             self.ghost_reward = -1000
             self.danger_radius = 4
             self.danger_decay = 0.7
-            self.food_reward = 20 
+            self.food_reward = 30 
             self.food_radius = 3
             self.food_decay = 0.5
         elif ghost_count == 1:  
