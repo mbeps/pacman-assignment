@@ -22,6 +22,8 @@ class MDPAgent(Agent):
         self.ghost_reward = None
         self.danger_radius = None
         self.danger_decay = None
+        self.scared_ghost_reward = None
+        self.scared_discount = None  # Added this line
         
         self.food_reward = None
         self.food_radius = None
@@ -29,7 +31,7 @@ class MDPAgent(Agent):
         
         self.iterations = 1500
         self.convergence_threshold = 0.001
-    
+            
     def registerInitialState(self, state):
         """
         Initialises the MDP agent a new game starts.
@@ -49,7 +51,7 @@ class MDPAgent(Agent):
         self.height = max(y for x, y in corners) + 1
         
         ghost_count = len(api.ghosts(state))
-        
+            
         if ghost_count == 2:
             self.discount = 0.75  
             self.living_reward = -0.04
@@ -57,6 +59,8 @@ class MDPAgent(Agent):
             self.ghost_reward = -1000
             self.danger_radius = 4
             self.danger_decay = 0.7
+            self.scared_ghost_reward = 500
+            self.scared_discount = 0.85  
             self.food_reward = 30 
             self.food_radius = 3
             self.food_decay = 0.5
@@ -67,6 +71,8 @@ class MDPAgent(Agent):
             self.ghost_reward = -100
             self.danger_radius = 5
             self.danger_decay = 0.7
+            self.scared_ghost_reward = 0
+            self.scared_discount = 0.8  
             self.food_reward = 75 
             self.food_radius = 3
             self.food_decay = 0.6
@@ -139,18 +145,37 @@ class MDPAgent(Agent):
         """
         self.current_state = state
         
-        # Reset non-wall states to living reward
+        # Reset rewards
         for x in range(self.width):
             for y in range(self.height):
                 if self.rewards[x][y] is not None:
                     self.rewards[x][y] = self.living_reward
 
-        # Process ghost states first (stronger influence)
-        ghost_states = api.ghostStates(state)
-        for (ghost_x, ghost_y), scared in ghost_states:
-            if not scared:
-                ghost_x, ghost_y = int(ghost_x), int(ghost_y)
+        # Process ghost states with timer consideration
+        ghost_states = api.ghostStatesWithTimes(state)
+        for (ghost_x, ghost_y), timer in ghost_states:
+            ghost_x, ghost_y = int(ghost_x), int(ghost_y)
+            
+            # Safety threshold - when timer is too low, treat as dangerous
+            SAFETY_THRESHOLD = 3
+            
+            if timer > SAFETY_THRESHOLD:
+                # Weight reward based on remaining time
+                time_weight = min(1.0, timer / 20.0)  # Normalize timer to max 1.0
+                weighted_reward = self.scared_ghost_reward * time_weight
                 
+                self.rewards[ghost_x][ghost_y] += weighted_reward
+                
+                # Propagate weighted influence
+                for x in range(self.width):
+                    for y in range(self.height):
+                        if self.rewards[x][y] is not None:
+                            manhattan_dist = abs(x - ghost_x) + abs(y - ghost_y)
+                            if manhattan_dist <= self.danger_radius:
+                                reward = weighted_reward * (self.danger_decay ** manhattan_dist)
+                                self.rewards[x][y] += reward
+            else:
+                # Treat as dangerous ghost even if still technically scared
                 for x in range(self.width):
                     for y in range(self.height):
                         if self.rewards[x][y] is not None:
@@ -159,19 +184,17 @@ class MDPAgent(Agent):
                                 penalty = self.ghost_reward * (self.danger_decay ** manhattan_dist)
                                 self.rewards[x][y] = min(self.rewards[x][y], penalty)
 
-        # Process food rewards with propagation
+        # Process food rewards (existing code)
         food_locations = api.food(state)
         for food_x, food_y in food_locations:
             self.rewards[food_x][food_y] += self.food_reward
             
-            # Propagate food reward with fast decay
+            # Food propagation (existing code)
             for x in range(self.width):
                 for y in range(self.height):
                     if self.rewards[x][y] is not None:
                         manhattan_dist = abs(x - food_x) + abs(y - food_y)
                         if manhattan_dist <= self.food_radius and manhattan_dist > 0:
-                            # Using 0.5 as base for very fast decay
-                            # This ensures food influence drops off quickly
                             reward = self.food_reward * (self.food_decay ** manhattan_dist)
                             self.rewards[x][y] += reward
 
@@ -412,10 +435,24 @@ class MDPAgent(Agent):
 
     def final(self, state):
         """Reset all instance variables between games"""
-        self.current_state = None
-        self.width = 0
-        self.height = 0
+        # Grid representation
+        self.grid = None
         self.utilities = None
         self.rewards = None
+        self.width = 0
+        self.height = 0
+        
+        # MDP parameters
+        self.discount = None
+        self.living_reward = None
+        self.danger_discount = None
+        self.ghost_reward = None
         self.danger_radius = 0
+        self.danger_decay = None
+        self.scared_ghost_reward = None
+        self.food_reward = None
         self.food_radius = 0
+        self.food_decay = None
+        
+        # State
+        self.current_state = None
