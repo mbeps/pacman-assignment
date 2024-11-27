@@ -51,7 +51,7 @@ class MDPAgent(Agent):
         ghost_count = len(api.ghosts(state))
         
         if ghost_count == 2:
-            self.discount = 0.75  
+            self.discount = 0.8  
             self.living_reward = -0.04
             self.danger_discount = 0.95
             self.ghost_reward = -1000
@@ -119,23 +119,44 @@ class MDPAgent(Agent):
 
     def update_rewards(self, state):
         """
-        Updates the rewards grid based on the current state.
+        Updates the rewards grid using progressive propagation that respects walls.
+    
+        This method enhances the standard MDP reward structure by implementing a more 
+        sophisticated reward propagation system. While traditional MDPs often use simple
+        distance-based rewards, this implementation creates a more realistic reward 
+        landscape by:
+
+        1. Progressive Propagation:
+        - Instead of using Manhattan distance, rewards spread step-by-step through
+            connected cells
+        - Each step applies the appropriate decay factor (danger_decay for ghosts,
+            food_decay for food)
+        - This creates a natural gradient that follows the actual maze pathways
+
+        2. Relationship to MDP Framework:
+        - The rewards computed here serve as the 'R(s)' component in the Bellman equation
+        - While Value Iteration computes long-term utilities, these rewards represent
+            immediate payoffs/penalties for being in each state
+        - The decay factors (0.7 for danger, 0.5 for food) create exponential falloff
+            within their respective radii (danger_radius and food_radius)
         
-        Ghost Radius Behavior:
-        Inside Radius:
-        - Uses exponential decay with Manhattan distance: ghost_reward * (0.7 ^ manhattan_dist)
-        - Stronger penalties closer to ghost, gradually decreasing until radius edge
-        - Applied directly during reward calculation phase
-        - Uses min() to ensure strongest penalty prevails
+        3. Decay Factor Behavior:
+        - Ghost penalties: Uses danger_decay (0.7) for slower falloff, creating wider
+            danger zones that encourage early ghost avoidance
+        - Food rewards: Uses food_decay (0.5) for faster falloff, creating focused
+            attractors that encourage direct paths to food
+        - Within radius: reward * (decay_factor ^ steps_from_source)
+        - Outside radius: only base living_reward applies
         
-        Outside Radius:  
-        - No direct ghost penalty applied in reward calculation
-        - Only receives living reward (-0.04 or -0.06)
-        - However, penalties still propagate through Bellman equation during value iteration
-        - Uses lower discount factor (0.75) compared to danger zone (0.95)
+        This enhancement improves the MDP by:
+        - Creating more accurate immediate rewards that respect maze topology
+        - Maintaining exponential decay while ensuring rewards only propagate through
+        valid paths
+        - Allowing different decay rates for threats vs rewards, enabling more nuanced
+        behavior
         
         Parameters:
-        state (GameState): The current game state
+        state (GameState): The current game state containing ghost and food positions
         """
         self.current_state = state
         
@@ -151,29 +172,83 @@ class MDPAgent(Agent):
             if not scared:
                 ghost_x, ghost_y = int(ghost_x), int(ghost_y)
                 
-                for x in range(self.width):
-                    for y in range(self.height):
-                        if self.rewards[x][y] is not None:
-                            manhattan_dist = abs(x - ghost_x) + abs(y - ghost_y)
-                            if manhattan_dist <= self.danger_radius:
-                                penalty = self.ghost_reward * (self.danger_decay ** manhattan_dist)
-                                self.rewards[x][y] = min(self.rewards[x][y], penalty)
+                # Initialize queue with ghost position
+                queue = [(ghost_x, ghost_y, self.ghost_reward, 0)]
+                visited = set()
+                
+                while queue:
+                    x, y, penalty, dist = queue.pop(0)
+                    if dist > self.danger_radius:
+                        continue
+                    
+                    # Only update if new penalty is more negative (worse)
+                    if self.rewards[x][y] is not None:
+                        self.rewards[x][y] = min(self.rewards[x][y], penalty)
+                    
+                    # Add valid neighbors to queue
+                    for next_x, next_y in self.get_valid_neighbors(x, y):
+                        if (next_x, next_y) not in visited:
+                            next_penalty = penalty * self.danger_decay
+                            next_dist = dist + 1
+                            queue.append((next_x, next_y, next_penalty, next_dist))
+                            visited.add((next_x, next_y))
 
         # Process food rewards with propagation
         food_locations = api.food(state)
         for food_x, food_y in food_locations:
             self.rewards[food_x][food_y] += self.food_reward
             
-            # Propagate food reward with fast decay
-            for x in range(self.width):
-                for y in range(self.height):
-                    if self.rewards[x][y] is not None:
-                        manhattan_dist = abs(x - food_x) + abs(y - food_y)
-                        if manhattan_dist <= self.food_radius and manhattan_dist > 0:
-                            # Using 0.5 as base for very fast decay
-                            # This ensures food influence drops off quickly
-                            reward = self.food_reward * (self.food_decay ** manhattan_dist)
-                            self.rewards[x][y] += reward
+            # Initialize queue with food position
+            queue = [(food_x, food_y, self.food_reward, 0)]
+            visited = set()
+            
+            while queue:
+                x, y, reward, dist = queue.pop(0)
+                if dist > self.food_radius:
+                    continue
+                
+                # Add reward (allows accumulation of multiple food influences)
+                if self.rewards[x][y] is not None and (x, y) != (food_x, food_y):
+                    self.rewards[x][y] += reward
+                
+                # Add valid neighbors to queue
+                for next_x, next_y in self.get_valid_neighbors(x, y):
+                    if (next_x, next_y) not in visited:
+                        next_reward = reward * self.food_decay
+                        next_dist = dist + 1
+                        queue.append((next_x, next_y, next_reward, next_dist))
+                        visited.add((next_x, next_y))
+
+    def get_valid_neighbors(self, x, y):
+        """
+        Gets valid neighboring cells that aren't walls, used for reward propagation.
+    
+        This method supports the progressive reward propagation by identifying legal adjacent 
+        cells. The definition of a valid neighbor is:
+        1. Must be directly adjacent (no diagonals)
+        2. Must be within grid boundaries
+        3. Must not be a wall (rewards[x][y] is not None)
+        
+        This ensures rewards only propagate through paths that Pacman could actually traverse,
+        making the reward landscape more accurately reflect the maze structure.
+        
+        Parameters:
+        x (int): x-coordinate of the current cell
+        y (int): y-coordinate of the current cell
+        
+        Returns:
+        list: List of (x,y) tuples representing valid adjacent cells
+        """
+        neighbors = []
+        # Check each adjacent cell (no diagonals)
+        for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            next_x, next_y = x + dx, y + dy
+            # Check if neighbor is within bounds and not a wall
+            if (0 <= next_x < self.width and 
+                0 <= next_y < self.height and 
+                self.rewards[next_x][next_y] is not None):
+                neighbors.append((next_x, next_y))
+        return neighbors
 
     def value_iteration(self):
         """
@@ -350,7 +425,7 @@ class MDPAgent(Agent):
         """
         self.update_state(state)
         #! For debugging 
-        # self.print_grid(self.utilities)
+        self.print_grid(self.utilities)
         
         x, y = api.whereAmI(state)
         legal = api.legalActions(state)
