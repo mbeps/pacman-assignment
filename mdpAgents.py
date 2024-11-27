@@ -23,7 +23,7 @@ class MDPAgent(Agent):
         self.danger_radius = None
         self.danger_decay = None
         self.scared_ghost_reward = None
-        self.scared_discount = None  # Added this line
+        self.scared_discount = None  
         
         self.food_reward = None
         self.food_radius = None
@@ -31,6 +31,13 @@ class MDPAgent(Agent):
         
         self.iterations = 1500
         self.convergence_threshold = 0.001
+
+        self.ghost_spawn_points = []
+        self.spawn_penalty = -50
+        self.spawn_radius = 2
+        self.spawn_decay = 0.6
+
+        self.power_up = None
             
     def registerInitialState(self, state):
         """
@@ -59,7 +66,8 @@ class MDPAgent(Agent):
             self.ghost_reward = -1000
             self.danger_radius = 4
             self.danger_decay = 0.7
-            self.scared_ghost_reward = 500
+            self.scared_ghost_reward = 100
+            self.power_up = 50
             self.scared_discount = 0.85  
             self.food_reward = 30 
             self.food_radius = 3
@@ -72,6 +80,7 @@ class MDPAgent(Agent):
             self.danger_radius = 5
             self.danger_decay = 0.7
             self.scared_ghost_reward = 0
+            self.power_up = 0
             self.scared_discount = 0.8  
             self.food_reward = 75 
             self.food_radius = 3
@@ -86,6 +95,9 @@ class MDPAgent(Agent):
             self.utilities[x][y] = None
             
         self.update_state(state)
+
+        # Record initial ghost positions as spawn points
+        self.ghost_spawn_points = [(int(x), int(y)) for (x,y) in api.ghosts(state)]
 
     def create_grid(self, initial_value):
         """
@@ -174,6 +186,24 @@ class MDPAgent(Agent):
                             if manhattan_dist <= self.danger_radius:
                                 reward = weighted_reward * (self.danger_decay ** manhattan_dist)
                                 self.rewards[x][y] += reward
+
+                # When ghosts are scared, add penalties around spawn points
+                for spawn_x, spawn_y in self.ghost_spawn_points:
+                    # spawn_penalty = self.spawn_penalty * (timer / 20.0)  # Scale with timer
+                    spawn_penalty = self.spawn_penalty  # Scale with timer
+                
+                    # Apply penalty to spawn area with radius
+                    for x in range(max(0, spawn_x - self.spawn_radius), 
+                                 min(self.width, spawn_x + self.spawn_radius + 1)):
+                        for y in range(max(0, spawn_y - self.spawn_radius),
+                                     min(self.height, spawn_y + self.spawn_radius + 1)):
+                            if self.rewards[x][y] is not None:
+                                dist = abs(x - spawn_x) + abs(y - spawn_y)
+                                if dist <= self.spawn_radius:
+                                    # Apply decaying penalty based on distance
+                                    decay = self.spawn_decay ** dist
+                                    self.rewards[x][y] += spawn_penalty * decay
+
             else:
                 # Treat as dangerous ghost even if still technically scared
                 for x in range(self.width):
@@ -197,6 +227,11 @@ class MDPAgent(Agent):
                         if manhattan_dist <= self.food_radius and manhattan_dist > 0:
                             reward = self.food_reward * (self.food_decay ** manhattan_dist)
                             self.rewards[x][y] += reward
+
+        # Process capsules
+        capsule_locations = api.capsules(state)
+        for capsule_x, capsule_y in capsule_locations:
+            self.rewards[capsule_x][capsule_y] += self.power_up  # Changed from capsule_reward
 
     def value_iteration(self):
         """
@@ -373,7 +408,7 @@ class MDPAgent(Agent):
         """
         self.update_state(state)
         #! For debugging 
-        # self.print_grid(self.utilities)
+        self.print_grid(self.utilities)
         
         x, y = api.whereAmI(state)
         legal = api.legalActions(state)
