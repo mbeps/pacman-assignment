@@ -95,15 +95,15 @@ class MDPAgent(Agent):
             self.food_radius = 3
             self.food_decay = 0.5
         elif ghost_count == 1:  
-            self.discount = 0.75  
-            self.living_reward = -0.06
-            self.danger_discount = 0.95  
-            self.ghost_reward = -100     
-            self.danger_radius = 5
-            self.danger_decay = 0.7
-            self.food_reward = 75 
+            self.discount = 0.85
+            self.living_reward = -0.1
+            self.danger_discount = 0.9
+            self.ghost_reward = -75
+            self.danger_radius = 3
+            self.danger_decay = 0.8
+            self.food_reward = 75
             self.food_radius = 3
-            self.food_decay = 0.6
+            self.food_decay = 0.7
         
         self.utilities = self.create_grid(0.0)
         self.rewards = self.create_grid(self.living_reward)
