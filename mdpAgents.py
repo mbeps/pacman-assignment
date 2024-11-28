@@ -29,6 +29,14 @@ class MDPAgent(Agent):
         
         self.iterations = 1500
         self.convergence_threshold = 0.001
+
+        self.scared_ghost_reward = 200  # High reward to encourage chasing
+        self.scared_safety_threshold = 3  # Steps before ghost becomes dangerous again
+
+        self.ghost_spawn_points = []
+        self.spawn_penalty = -50  # Base penalty for spawn areas
+        self.spawn_radius = 2     # How far the spawn penalty propagates
+        self.spawn_decay = 0.6    # How quickly the penalty decays
     
     def registerInitialState(self, state):
         """
@@ -63,8 +71,8 @@ class MDPAgent(Agent):
         elif ghost_count == 1:  
             self.discount = 0.75  
             self.living_reward = -0.06
-            self.danger_discount = 0.95
-            self.ghost_reward = -100
+            self.danger_discount = 0.95  # Fixed: Added missing line break
+            self.ghost_reward = -100     # Fixed: Separated into new line
             self.danger_radius = 5
             self.danger_decay = 0.7
             self.food_reward = 75 
@@ -80,6 +88,9 @@ class MDPAgent(Agent):
             self.utilities[x][y] = None
             
         self.update_state(state)
+
+        # Store ghost spawn points from initial positions
+        self.ghost_spawn_points = [(int(x), int(y)) for x, y in api.ghosts(state)]
 
     def create_grid(self, initial_value):
         """
@@ -168,30 +179,65 @@ class MDPAgent(Agent):
 
         # Process ghost states first (stronger influence)
         ghost_states = api.ghostStates(state)
-        for (ghost_x, ghost_y), scared in ghost_states:
-            if not scared:
-                ghost_x, ghost_y = int(ghost_x), int(ghost_y)
-                
-                # Initialize queue with ghost position
+        for (ghost_x, ghost_y), scared_timer in ghost_states:
+            ghost_x, ghost_y = int(ghost_x), int(ghost_y)
+            
+            # Initialize queue differently based on ghost state
+            if scared_timer <= self.scared_safety_threshold:
+                # Treat as dangerous ghost
                 queue = [(ghost_x, ghost_y, self.ghost_reward, 0)]
-                visited = set()
+            else:
+                # Weight reward based on remaining time
+                time_weight = min(1.0, scared_timer / 20.0)
+                weighted_reward = self.scared_ghost_reward * time_weight
+                queue = [(ghost_x, ghost_y, weighted_reward, 0)]
+            
+            visited = set()
+            
+            while queue:
+                x, y, value, dist = queue.pop(0)
+                if dist > self.danger_radius:
+                    continue
                 
-                while queue:
-                    x, y, penalty, dist = queue.pop(0)
-                    if dist > self.danger_radius:
-                        continue
+                if self.rewards[x][y] is not None:
+                    if scared_timer <= self.scared_safety_threshold:
+                        # For dangerous ghosts, take minimum (most negative)
+                        self.rewards[x][y] = min(self.rewards[x][y], value)
+                    else:
+                        # For scared ghosts, add reward
+                        self.rewards[x][y] += value
+                
+                # Add valid neighbors with decayed values
+                for next_x, next_y in self.get_valid_neighbors(x, y):
+                    if (next_x, next_y) not in visited:
+                        next_value = value * self.danger_decay
+                        next_dist = dist + 1
+                        queue.append((next_x, next_y, next_value, next_dist))
+                        visited.add((next_x, next_y))
+
+            if scared_timer > self.scared_safety_threshold:
+                # Process spawn points when ghosts are scared
+                for spawn_x, spawn_y in self.ghost_spawn_points:
+                    # Initialize queue with spawn point
+                    spawn_queue = [(spawn_x, spawn_y, self.spawn_penalty, 0)]
+                    spawn_visited = set()
                     
-                    # Only update if new penalty is more negative (worse)
-                    if self.rewards[x][y] is not None:
-                        self.rewards[x][y] = min(self.rewards[x][y], penalty)
-                    
-                    # Add valid neighbors to queue
-                    for next_x, next_y in self.get_valid_neighbors(x, y):
-                        if (next_x, next_y) not in visited:
-                            next_penalty = penalty * self.danger_decay
-                            next_dist = dist + 1
-                            queue.append((next_x, next_y, next_penalty, next_dist))
-                            visited.add((next_x, next_y))
+                    while spawn_queue:
+                        x, y, penalty, dist = spawn_queue.pop(0)
+                        if dist > self.spawn_radius:
+                            continue
+                            
+                        if self.rewards[x][y] is not None:
+                            # Add penalty to current cell
+                            self.rewards[x][y] += penalty
+                            
+                        # Add valid neighbors with decayed penalty
+                        for next_x, next_y in self.get_valid_neighbors(x, y):
+                            if (next_x, next_y) not in spawn_visited:
+                                next_penalty = penalty * self.spawn_decay
+                                next_dist = dist + 1
+                                spawn_queue.append((next_x, next_y, next_penalty, next_dist))
+                                spawn_visited.add((next_x, next_y))
 
         # Process food rewards with propagation
         food_locations = api.food(state)
@@ -425,7 +471,7 @@ class MDPAgent(Agent):
         """
         self.update_state(state)
         #! For debugging 
-        self.print_grid(self.utilities)
+        # self.print_grid(self.utilities)
         
         x, y = api.whereAmI(state)
         legal = api.legalActions(state)
