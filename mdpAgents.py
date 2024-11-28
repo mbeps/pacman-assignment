@@ -7,36 +7,62 @@ import util
 
 class MDPAgent(Agent):
     def __init__(self):
-        # Grid representation
+        # --- Grid State Parameters ---
+        # Represents the game board layout
         self.grid = None
-        self.utilities = None
+        # Stores utility values for each cell
+        self.utilities = None  
+        # Stores reward values for each cell
         self.rewards = None
+        # Grid dimensions
         self.width = None 
         self.height = None
         
-        # Default MDP parameters that will be overridden
+        # --- Core MDP Parameters ---
+        # Discount factor (0-1): Lower values make agent more short-sighted
         self.discount = None
+        # Reward/penalty for each move: More negative makes agent move faster
         self.living_reward = None
         
+        # --- Ghost/Danger Parameters ---
+        # How much to reduce utilities near ghosts: Higher values increase ghost avoidance
         self.danger_discount = None
-        self.ghost_reward = None
+        # Base penalty for ghost cells: More negative means stronger ghost avoidance
+        self.ghost_reward = None  
+        # How far ghost effects spread: Larger means wider avoidance area
         self.danger_radius = None
+        # How quickly ghost penalty decreases with distance: Higher means faster dropoff
         self.danger_decay = None
         
+        # --- Food Parameters ---
+        # Base reward for food cells: Higher values increase food seeking
         self.food_reward = None
+        # How far food effects spread: Larger means earlier food seeking
         self.food_radius = None
+        # How quickly food reward decreases with distance: Higher means faster dropoff
         self.food_decay = None
         
+        # --- Algorithm Parameters ---
+        # Number of value iteration updates: More iterations = more accurate but slower
         self.iterations = 1500
+        # Minimum change to continue iterating: Lower = more precise but slower
         self.convergence_threshold = 0.001
-
-        self.scared_ghost_reward = 200  # High reward to encourage chasing
-        self.scared_safety_threshold = 3  # Steps before ghost becomes dangerous again
-
+    
+        # --- Special Ghost States ---
+        # Reward for eating scared ghost: Higher encourages ghost hunting
+        self.scared_ghost_reward = 200  
+        # Distance considered safe from scared ghost: Higher means more caution
+        self.scared_safety_threshold = 3  
+    
+        # --- Spawn Point Parameters ---
+        # List of ghost spawn locations
         self.ghost_spawn_points = []
-        self.spawn_penalty = -50  # Base penalty for spawn areas
-        self.spawn_radius = 2     # How far the spawn penalty propagates
-        self.spawn_decay = 0.6    # How quickly the penalty decays
+        # Penalty near spawn points: More negative means stronger spawn avoidance
+        self.spawn_penalty = -50
+        # How far spawn effects spread: Larger means wider avoidance area
+        self.spawn_radius = 2
+        # How quickly spawn penalty decreases: Higher means faster dropoff
+        self.spawn_decay = 0.6
     
     def registerInitialState(self, state):
         """
@@ -71,8 +97,8 @@ class MDPAgent(Agent):
         elif ghost_count == 1:  
             self.discount = 0.75  
             self.living_reward = -0.06
-            self.danger_discount = 0.95  # Fixed: Added missing line break
-            self.ghost_reward = -100     # Fixed: Separated into new line
+            self.danger_discount = 0.95  
+            self.ghost_reward = -100     
             self.danger_radius = 5
             self.danger_decay = 0.7
             self.food_reward = 75 
