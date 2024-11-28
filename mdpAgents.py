@@ -425,17 +425,17 @@ class MDPAgent(Agent):
         1. State Evaluation:
         - Retrieves the immediate reward R(s) for the current state
         - Considers danger zones from ghost positions
-        - Applies the discount factor γ to future rewards
+        - Applies the discount factor (gamma) to future rewards
         - Computes maximum expected utility across all actions
         
         2. MDP Components Used:
         - Transition model: P(s'|s,a) for movement uncertainty
         - Reward function: R(s) from the reward grid
-        - Discount factor: γ for future reward weighting
+        - Discount factor: gamma for future reward weighting
         - Action set: Available movements from current position
         
         3. Utility Calculation:
-        - Implements U(s) = R(s) + γ * max_a Σ P(s'|s,a)U(s')
+        - Implements U(s) = R(s) + gamma * max_a sum(P(s'|s,a)U(s'))
         - Handles wall collisions and boundary conditions
         - Incorporates movement uncertainty in expected outcomes
         - Returns the optimal utility value for the state
